@@ -1,0 +1,19 @@
+apply plugin: 'java'
+apply plugin: 'maven'
+
+sourceCompatibility = '1.6'
+targetCompatibility = '1.6'
+
+group = 'com.fidesmo'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    compile 'com.google.android:android:4.1.1.4'
+}
+
+task wrapper(type: Wrapper) {
+    gradleVersion = '2.0'
+}
