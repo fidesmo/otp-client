@@ -33,7 +33,8 @@ package com.yubico.yubioath.model;
 import android.nfc.tech.IsoDep;
 import android.util.Log;
 import com.yubico.yubioath.exc.*;
-
+import com.fidesmo.oath.hardware.HardwareToken;
+import com.fidesmo.oath.hardware.TokenMeta;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.io.IOException;
@@ -42,14 +43,7 @@ import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.*;
 
-/**
- * Created with IntelliJ IDEA.
- * User: dain
- * Date: 8/23/13
- * Time: 3:57 PM
- * To change this template use File | Settings | File Templates.
- */
-public class YubiKeyNeo {
+public class YkneoOath implements HardwareToken {
     private static final byte[] APDU_OK = {(byte) 0x90, 0x00};
     private static final byte[] APDU_FILE_FULL = {(byte) 0x6a, (byte) 0x84};
 
@@ -86,11 +80,9 @@ public class YubiKeyNeo {
 
     //APDU CL INS P1 P2 L ...
     //DATA 00  00 00 00 00 ...
-    private static final byte[] SELECT_COMMAND = {0x00, (byte) 0xa4, 0x04, 0x00, 0x08, (byte) 0xa0, 0x00, 0x00, 0x05, 0x27, 0x21, 0x01, 0x01};
+    private static final byte[] SELECT_COMMAND = {0x00, (byte) 0xa4, 0x04, 0x00, 0x0C, (byte)0xA0, 0x00, 0x00, 0x06, 0x17, 0x00, (byte)0x94, (byte)0xC3, (byte)0xCD, 0x60, 0x01, 0x01 };
     private static final byte[] CALCULATE_ALL_COMMAND = {0x00, CALCULATE_ALL_INS, 0x00, 0x01, 0x0a, CHALLENGE_TAG, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
     private static final byte[] CALCULATE_COMMAND = {0x00, CALCULATE_INS, 0x00, 0x01, 0x00};
-    private static final byte[] SET_LOCK_COMMAND = {0x00, SET_CODE_INS, 0x00, 0x00, 0x00};
-    private static final byte[] UNLOCK_COMMAND = {0x00, VALIDATE_INS, 0x00, 0x00, 0x00};
     private static final byte[] PUT_COMMAND = {0x00, PUT_INS, 0x00, 0x00, 0x00};
     private static final byte[] DELETE_COMMAND = {0x00, DELETE_INS, 0x00, 0x00, 0x00};
     private static final byte[] SEND_REMAINING_COMMAND = {0x00, SEND_REMAINING_INS, 0x00, 0x00, 0x00};
@@ -98,14 +90,13 @@ public class YubiKeyNeo {
     private static final int[] MOD = {1, 10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000};
 
 
-    private final KeyManager keyManager;
     private final IsoDep isoTag;
-    private final byte[] id;
 
-    public YubiKeyNeo(KeyManager keyManager, IsoDep isoTag) throws IOException, AppletSelectException {
-        this.keyManager = keyManager;
+    public YkneoOath(IsoDep isoTag) {
         this.isoTag = isoTag;
+    }
 
+    public byte[] open() throws IOException, AppletSelectException {
         isoTag.connect();
         isoTag.setTimeout(3000);
         byte[] resp = isoTag.transceive(SELECT_COMMAND);
@@ -119,131 +110,35 @@ public class YubiKeyNeo {
 
         checkVersion(version);
 
-        id = parseBlock(resp, offset, NAME_TAG);
-        offset += id.length + 2;
-        if (resp.length - offset - 4 > 0) {
-            byte[] challenge = parseBlock(resp, offset, CHALLENGE_TAG);
-            unlock(challenge);
-        }
+        return parseBlock(resp, offset, NAME_TAG);
     }
 
-    public byte[] getId() {
-        return id;
-    }
-
-    public String getDisplayName(String defaultName) {
-        return keyManager.getDisplayName(id, defaultName);
-    }
-
-    public void setDisplayName(String name) {
-        keyManager.setDisplayName(id, name);
-    }
-
-    private void unlock(byte[] challenge) throws IOException, PasswordRequiredException {
-        byte[] secret = keyManager.getSecret(id);
-        byte[] altSecret = keyManager.getAltSecret(id);
-        if (secret == null && altSecret == null) {
-            throw new PasswordRequiredException("Password is missing!", id, true);
+    private byte generateType(TokenMeta meta) {
+        byte type = 0;
+        switch(meta.getType()) {
+        case TOTP:
+            type = TOTP_TYPE;
+            break;
+        case HOTP:
+            type = HOTP_TYPE;
+            break;
         }
 
-        if (secret != null && doUnlock(challenge, secret)) { //Try the main password
-            keyManager.storeAltSecret(id, new byte[0], true);
-            return;
-        } else if (altSecret != null && doUnlock(challenge, altSecret)) { //Try a password that might have been set
-            keyManager.promoteAltSecret(id);
-            return;
+        byte algo = 0;
+        switch(meta.getAlgorithm()) {
+        case SHA1:
+            algo = HMAC_SHA1;
+            break;
+        case SHA256:
+            algo = HMAC_SHA256;
+            break;
         }
-
-        throw new PasswordRequiredException("Password is incorrect!", id, false);
+        return (byte)((int)type | (int)algo);
     }
 
-    private boolean doUnlock(byte[] challenge, byte[] secret) throws IOException {
-        byte[] response = hmacSha1(secret, challenge);
-        byte[] myChallenge = new byte[8];
-        SecureRandom random = new SecureRandom();
-        random.nextBytes(myChallenge);
-        byte[] myResponse = hmacSha1(secret, myChallenge);
 
-        byte[] data = new byte[UNLOCK_COMMAND.length + 2 + response.length + 2 + myChallenge.length];
-        System.arraycopy(UNLOCK_COMMAND, 0, data, 0, UNLOCK_COMMAND.length);
-        int offset = 4;
-        data[offset++] = (byte) (data.length - 5);
-
-        data[offset++] = RESPONSE_TAG;
-        data[offset++] = (byte) response.length;
-        System.arraycopy(response, 0, data, offset, response.length);
-        offset += response.length;
-
-        data[offset++] = CHALLENGE_TAG;
-        data[offset++] = (byte) myChallenge.length;
-        System.arraycopy(myChallenge, 0, data, offset, myChallenge.length);
-        offset += myChallenge.length;
-
-        byte[] resp = isoTag.transceive(data);
-
-        if (compareStatus(resp, APDU_OK)) {
-            byte[] neoResponse = parseBlock(resp, 0, RESPONSE_TAG);
-            if (Arrays.equals(myResponse, neoResponse)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private void unsetLockCode() throws IOException {
-        keyManager.storeAltSecret(id, new byte[0], true);
-        byte[] data = new byte[SET_LOCK_COMMAND.length + 2];
-        System.arraycopy(SET_LOCK_COMMAND, 0, data, 0, SET_LOCK_COMMAND.length);
-        data[4] = 2;
-        data[5] = KEY_TAG;
-
-        requireStatus(isoTag.transceive(data), APDU_OK);
-        keyManager.promoteAltSecret(id);
-    }
-
-    public void setLockCode(String code, boolean remember) throws IOException {
-        byte[] secret = KeyManager.calculateSecret(code, id);
-        if (secret.length == 0) {
-            unsetLockCode();
-            return;
-        } else if(Arrays.equals(secret, keyManager.getSecret(id))) {
-            return;
-        }
-
-        keyManager.storeAltSecret(id, secret, remember); //Store but don't overwrite. If we get a failure below we won't know if the password was set or not.
-
-        byte[] challenge = new byte[8];
-        SecureRandom random = new SecureRandom();
-        random.nextBytes(challenge);
-        byte[] response = hmacSha1(secret, challenge);
-
-        byte[] data = new byte[SET_LOCK_COMMAND.length + 3 + secret.length + 2 + challenge.length + 2 + response.length];
-        System.arraycopy(SET_LOCK_COMMAND, 0, data, 0, SET_LOCK_COMMAND.length);
-        int offset = 4;
-        data[offset++] = (byte) (data.length - 5);
-
-        data[offset++] = KEY_TAG;
-        data[offset++] = (byte) (secret.length + 1);
-        data[offset++] = TOTP_TYPE | HMAC_SHA1;
-        System.arraycopy(secret, 0, data, offset, secret.length);
-        offset += secret.length;
-
-        data[offset++] = CHALLENGE_TAG;
-        data[offset++] = (byte) challenge.length;
-        System.arraycopy(challenge, 0, data, offset, challenge.length);
-        offset += challenge.length;
-
-        data[offset++] = RESPONSE_TAG;
-        data[offset++] = (byte) response.length;
-        System.arraycopy(response, 0, data, offset, response.length);
-
-        requireStatus(isoTag.transceive(data), APDU_OK);
-        keyManager.promoteAltSecret(id);
-    }
-
-    public void storeCode(String name, byte[] key, byte type, int digits, int counter) throws IOException {
-        byte[] nameBytes = name.getBytes();
+    public void storeCode(TokenMeta token, byte[] key, int counter) throws IOException {
+        byte[] nameBytes = token.getLabel().getBytes();
         byte[] counterBytes = null;
         int length = PUT_COMMAND.length + 2 + nameBytes.length + 4 + key.length;
         if (counter > 0) {
@@ -266,8 +161,8 @@ public class YubiKeyNeo {
 
         data[offset++] = KEY_TAG;
         data[offset++] = (byte) (key.length + 2);
-        data[offset++] = type;
-        data[offset++] = (byte) digits;
+        data[offset++] = generateType(token);
+        data[offset++] = (byte) token.getDigits();
         System.arraycopy(key, 0, data, offset, key.length);
         offset += key.length;
 
@@ -318,8 +213,34 @@ public class YubiKeyNeo {
         return codeFromTruncated(parseBlock(resp, 0, T_RESPONSE_TAG));
     }
 
-    public List<Map<String, String>> getCodes(long timestamp) throws IOException {
-        List<Map<String, String>> codes = new ArrayList<Map<String, String>>();
+    public String readTotpCode(String name, long timestamp) throws IOException {
+        byte[] nameBytes = name.getBytes();
+        byte[] data = new byte[CALCULATE_COMMAND.length + 2 + nameBytes.length + 10];
+        System.arraycopy(CALCULATE_COMMAND, 0, data, 0, CALCULATE_COMMAND.length);
+        int offset = 4;
+        data[offset++] = (byte) (data.length - 5);
+        data[offset++] = NAME_TAG;
+        data[offset++] = (byte) nameBytes.length;
+        System.arraycopy(nameBytes, 0, data, offset, nameBytes.length);
+        offset += nameBytes.length;
+
+        data[offset++] = CHALLENGE_TAG;
+        data[offset++] = 8;
+        data[offset++] = 0;
+        data[offset++] = 0;
+        data[offset++] = 0;
+        data[offset++] = 0;
+        data[offset++] = (byte) (timestamp >> 24);
+        data[offset++] = (byte) (timestamp >> 16);
+        data[offset++] = (byte) (timestamp >> 8);
+        data[offset++] = (byte) timestamp;
+
+        byte[] resp = requireStatus(send(data), APDU_OK);
+        return codeFromTruncated(parseBlock(resp, 0, T_RESPONSE_TAG));
+    }
+
+    public List<TokenMeta> getTokens(long timestamp) throws IOException {
+        List<TokenMeta> tokens = new ArrayList<TokenMeta>();
 
         byte[] command = new byte[CALCULATE_ALL_COMMAND.length];
         System.arraycopy(CALCULATE_ALL_COMMAND, 0, command, 0, CALCULATE_ALL_COMMAND.length);
@@ -339,23 +260,18 @@ public class YubiKeyNeo {
             byte[] hashBytes = parseBlock(resp, offset, responseType);
             offset += hashBytes.length + 2;
 
-            Map<String, String> oathCode = new HashMap<String, String>();
-            oathCode.put("label", new String(name));
+            String nameStr = new String(name);
             switch (responseType) {
                 case T_RESPONSE_TAG:
-                    oathCode.put("code", codeFromTruncated(hashBytes));
+                    tokens.add(new TokenMeta(new String(name), codeFromTruncated(hashBytes).length(), TokenMeta.Type.TOTP));
                     break;
                 case NO_RESPONSE_TAG:
-                    oathCode.put("code", null);
+                    tokens.add(new TokenMeta(new String(name), 6, TokenMeta.Type.HOTP));
                     break;
-                default:
-                    oathCode.put("code", "<invalid code>");
             }
-            Log.d("yubioath", "label: " + oathCode.get("label"));
-            codes.add(oathCode);
         }
 
-        return codes;
+        return tokens;
     }
 
     private byte[] send(byte[] command) throws IOException {
@@ -409,19 +325,6 @@ public class YubiKeyNeo {
             return block;
         } else {
             throw new IOException("Require block type: " + identifier + ", got: " + data[offset]);
-        }
-    }
-
-    private static byte[] hmacSha1(byte[] key, byte[] data) {
-        try {
-            Mac mac = Mac.getInstance("HmacSHA1");
-            SecretKeySpec secret = new SecretKeySpec(key, mac.getAlgorithm());
-            mac.init(secret);
-            return mac.doFinal(data);
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException(e);
-        } catch (InvalidKeyException e) {
-            throw new RuntimeException(e);
         }
     }
 
