@@ -1,17 +1,81 @@
 apply plugin: 'java'
 apply plugin: 'maven'
+apply plugin: 'release'
 
 sourceCompatibility = '1.6'
 targetCompatibility = '1.6'
 
 group = 'com.fidesmo'
 
+buildscript {
+   repositories {
+      mavenCentral()
+   }
+   dependencies {
+      classpath 'com.github.townsfolk:gradle-release:1.2'
+   }
+}
+
 repositories {
     mavenCentral()
 }
 
+configurations {
+    mavenDeploy
+}
+
 dependencies {
-    compile 'com.google.android:android:4.1.1.4'
+    compile 'com.google.android:android:4.0.1.2'
+    mavenDeploy 'org.kuali.maven.wagons:maven-s3-wagon:1.2.1'
+}
+
+uploadArchives {
+    repositories {
+        mavenDeployer {
+            uniqueVersion = false
+            configuration = configurations.mavenDeploy
+            repository(url: "s3://${version.endsWith('-SNAPSHOT') ? 'snapshots' : 'releases'}.marmeladburk.fidesmo.com")
+            pom.project {
+                name 'OTP client library'
+                description 'Library for communicating with a OTP application running in a smart card.'
+                url 'https://github.com/fidesmo/otp-client'
+                inceptionYear '2014'
+
+                artifactId 'otp-client'
+
+                scm {
+                    url 'https://github.com/fidesmo/otp-client'
+                    connection 'scm:https://github.com/fidesmo/otp-client'
+                    developerConnection 'scm:git@github.com:fidesmo/otp-client.git'
+                }
+
+                licenses {
+                    license {
+                        name 'The Apache Software License, Version 2.0'
+                        url 'http://www.apache.org/licenses/LICENSE-2.0.txt'
+                        distribution 'repo'
+                    }
+                }
+
+                developers {
+                    developer {
+                        id 'yves'
+                        name 'Yves Müller'
+                        email 'yves.mueller@fidesmo.com'
+                        organization 'Fidesmo AB'
+                        organizationUrl 'http://fidesmo.com'
+                    }
+                    developer {
+                        id 'petter'
+                        name 'Petter Arvidsson'
+                        email 'petter.arvidsson@fidesmo.com'
+                        organization 'Fidesmo AB'
+                        organizationUrl 'http://fidesmo.com'
+                    }
+                }
+            }
+        }
+    }
 }
 
 task wrapper(type: Wrapper) {
