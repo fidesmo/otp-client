@@ -76,11 +76,13 @@ public class YkneoOath implements HardwareToken {
     public static final byte OATH_MASK = (byte) 0xf0;
     public static final byte HOTP_TYPE = 0x10;
     public static final byte TOTP_TYPE = 0x20;
-
+    public static final byte[] FIDESMO_AID = {(byte)0xA0, 0x00, 0x00, 0x06, 0x17, 0x00, (byte)0x94, (byte)0xC3, (byte)0xCD, 0x60, 0x01, 0x01};
+    public static final byte[] YUBICO_AID = {(byte) 0xa0, 0x00, 0x00, 0x05, 0x27, 0x21, 0x01, 0x01};
+    public static final List<byte[]> DEFAULT_AIDS = new ArrayList() {{add(FIDESMO_AID); add(YUBICO_AID);}};
 
     //APDU CL INS P1 P2 L ...
     //DATA 00  00 00 00 00 ...
-    private static final byte[] SELECT_COMMAND = {0x00, (byte) 0xa4, 0x04, 0x00, 0x0C, (byte)0xA0, 0x00, 0x00, 0x06, 0x17, 0x00, (byte)0x94, (byte)0xC3, (byte)0xCD, 0x60, 0x01, 0x01 };
+    private static final byte[] SELECT_COMMAND = {0x00, (byte) 0xa4, 0x04, 0x00};
     private static final byte[] CALCULATE_ALL_COMMAND = {0x00, CALCULATE_ALL_INS, 0x00, 0x01, 0x0a, CHALLENGE_TAG, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
     private static final byte[] CALCULATE_COMMAND = {0x00, CALCULATE_INS, 0x00, 0x01, 0x00};
     private static final byte[] PUT_COMMAND = {0x00, PUT_INS, 0x00, 0x00, 0x00};
@@ -91,18 +93,40 @@ public class YkneoOath implements HardwareToken {
 
 
     private final IsoDep isoTag;
+    private byte[] id;
 
     public YkneoOath(IsoDep isoTag) {
         this.isoTag = isoTag;
     }
 
+    private byte[] select(byte[] aid) {
+        byte[] apdu = new byte[SELECT_COMMAND.length + 1 + aid.length];
+        System.arraycopy(SELECT_COMMAND, 0, apdu, 0, SELECT_COMMAND.length);
+        apdu[SELECT_COMMAND.length] = (byte)aid.length;
+        System.arraycopy(aid, 0, apdu, SELECT_COMMAND.length + 1, aid.length);
+        return apdu;
+    }
+
     public byte[] open() throws IOException, AppletSelectException {
+        return open(DEFAULT_AIDS);
+    }
+
+    public byte[] open(List<byte[]> aids) throws IOException, AppletSelectException {
         isoTag.connect();
         isoTag.setTimeout(3000);
-        byte[] resp = isoTag.transceive(SELECT_COMMAND);
-        if (!compareStatus(resp, APDU_OK)) {
-            throw new AppletMissingException();
+
+        byte[] resp = null;
+        byte[] selected = null;
+        for(byte[] aid: aids) {
+            resp = isoTag.transceive(select(aid));
+            if(compareStatus(resp, APDU_OK)) {
+                selected = aid;
+                break;
+            }
         }
+
+        if(resp == null || !compareStatus(resp, APDU_OK))
+            throw new AppletMissingException();
 
         int offset = 0;
         byte[] version = parseBlock(resp, offset, VERSION_TAG);
@@ -110,7 +134,12 @@ public class YkneoOath implements HardwareToken {
 
         checkVersion(version);
 
-        return parseBlock(resp, offset, NAME_TAG);
+        id = parseBlock(resp, offset, NAME_TAG);
+        return selected;
+    }
+
+    public byte[] getId() {
+        return id;
     }
 
     private byte generateType(TokenMeta meta) {
